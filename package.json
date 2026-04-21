@@ -1,0 +1,12 @@
+{
+  "name": "tradeline-marketplace",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "scrape": "node scripts/scrape.mjs"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0"
+  }
+}

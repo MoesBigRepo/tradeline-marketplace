@@ -14,12 +14,14 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ExcelJS from 'exceljs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = resolve(__dirname, '..', 'data');
 
 const SUPPLY_URL = 'https://www.tradelinesupply.com/pricing/';
-const GENIE_URL = 'https://docs.google.com/spreadsheets/d/1DXM1p0LlmQ9H5vY_1mmJWO35P-dyq4BXJgCRmB6sb-g/export?format=csv&gid=244641818';
+// XLSX preserves cell fills — black-filled rows mean "SOLD OUT" and are filtered.
+const GENIE_URL = 'https://docs.google.com/spreadsheets/d/1DXM1p0LlmQ9H5vY_1mmJWO35P-dyq4BXJgCRmB6sb-g/export?format=xlsx&gid=244641818';
 const BOOST_URL = 'https://www.boostcredit101.com/tradelines';
 const GFS_URL = 'https://gfsgroup.org/tradelines-for-sale?limit=50&offset=0';
 
@@ -322,21 +324,89 @@ async function scrapeSupply() {
   return { accounts, timestamp: new Date().toISOString(), source: 'tradelinesupply.com', count: accounts.length };
 }
 
+function isBlackFill(cell) {
+  // Tradeline Genie marks sold-out rows with a black cell fill.
+  // Accept fgColor or bgColor, ARGB or RGB.
+  const f = cell && cell.fill;
+  if (!f) return false;
+  const c = f.fgColor || f.bgColor;
+  if (!c) return false;
+  const raw = String(c.argb || c.rgb || '').toLowerCase();
+  // ARGB "FF000000" or RGB "000000" or any form ending in 6 zeros.
+  return raw === 'ff000000' || raw === '000000' || (raw.length >= 6 && raw.endsWith('000000'));
+}
+
 async function scrapeGenie() {
   // Hardened for "sheet closed" scenarios — sheet owner toggles access when inventory is low.
-  const resp = await fetchWithTimeout(GENIE_URL, 15000);
+  const resp = await fetchWithTimeout(GENIE_URL, 20000);
   if (!resp.ok) throw new Error(`Genie HTTP ${resp.status} (sheet may be closed)`);
-  const ctype = (resp.headers.get('content-type') || '').toLowerCase();
-  let text = await resp.text();
-  // Strip UTF-8 BOM if present — Google sometimes emits one on CSV exports.
-  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
-  // Google returns HTML error pages when the sheet is private; detect before parsing.
-  if (!ctype.includes('csv') && !ctype.includes('text/plain') && !ctype.includes('application/octet-stream')) {
-    throw new Error(`Genie returned non-CSV content-type "${ctype}" (sheet may be closed)`);
+  const buf = Buffer.from(await resp.arrayBuffer());
+  if (buf.length < 100) throw new Error(`Genie returned ${buf.length} bytes (sheet may be closed)`);
+  // XLSX files start with PK (zip magic). HTML error pages start with '<'.
+  if (buf[0] !== 0x50 || buf[1] !== 0x4b) {
+    throw new Error('Genie did not return an XLSX archive (sheet may be closed)');
   }
-  if (text.trim().startsWith('<')) throw new Error('Genie returned HTML (sheet may be closed)');
-  const accounts = parseGenie(text);
+
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buf);
+  const ws = wb.worksheets[0];
+  if (!ws) throw new Error('Genie XLSX has no worksheets');
+
+  // Detect column positions from the header row. Sheet owners reorder
+  // columns occasionally; looking up by name survives shifts.
+  let accountCol = -1, dateCol = -1, priceCol = -1;
+  for (let r = 1; r <= 5; r++) {
+    const row = ws.getRow(r);
+    row.eachCell((cell, colIdx) => {
+      const v = String(cell.value || '').trim().toUpperCase();
+      if (v === 'AGE/BANK/CREDIT LIMIT') accountCol = colIdx;
+      else if (v === 'STATEMENT/CLOSING DATE') dateCol = colIdx;
+      else if (v === 'PRICE') priceCol = colIdx;
+    });
+    if (accountCol > 0 && dateCol > 0 && priceCol > 0) break;
+  }
+  // Fallbacks: 1-indexed exceljs column positions observed in the live sheet
+  // (CSV equivalents were 0-indexed 11/12/13 — different addressing scheme).
+  if (accountCol < 0) accountCol = 13;
+  if (dateCol < 0) dateCol = 14;
+  if (priceCol < 0) priceCol = 15;
+
+  // `cell.text` returns the sheet's formatted display string, matching what
+  // CSV export would produce. Using it avoids `Date.toString()` ("Mon Apr 21
+  // 2026 ...") for date-typed cells and preserves decimal formatting for
+  // numeric cells.
+  const cellText = (cell) => (cell && typeof cell.text === 'string')
+    ? cell.text.trim()
+    : String((cell && cell.value) ?? '').trim();
+
+  let skippedSoldOut = 0;
+  const accounts = [];
+  // Data starts at row 5; rows 1-4 are header/legend/instructions in the
+  // current sheet layout. Legend row is also black-filled in the spots column.
+  ws.eachRow({ includeEmpty: false }, (row, rowIdx) => {
+    if (rowIdx < 5) return;
+    const accountCell = row.getCell(accountCol);
+    const accountVal = cellText(accountCell);
+    if (!accountVal) return;
+    if (accountVal.toUpperCase().includes('BLACK BAR')) return;
+
+    // Sold-out: the account cell (or its row) is filled black.
+    if (isBlackFill(accountCell) || isBlackFill(row.getCell(1))) {
+      skippedSoldOut++;
+      return;
+    }
+
+    const spots = cellText(row.getCell(1));
+    const closingDate = cellText(row.getCell(dateCol));
+    const price = cellText(row.getCell(priceCol));
+
+    const parsed = parseAccount(accountVal);
+    if (!parsed.bank) return;
+    accounts.push([spots, parsed.age, parsed.bank, parsed.limit, closingDate, price, String(rowIdx)]);
+  });
+
   if (accounts.length === 0) throw new Error('Genie parsed 0 accounts (sheet may be closed or empty)');
+  console.log(`[genie] filtered ${skippedSoldOut} sold-out (black-filled) rows`);
   return { accounts, timestamp: new Date().toISOString(), source: 'tradelinegenie.com', count: accounts.length };
 }
 
