@@ -76,22 +76,6 @@ function parseSupply(html) {
   return accounts;
 }
 
-function parseCSVLine(line) {
-  const result = [];
-  let current = '';
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (c === '"') {
-      if (inQuotes && i + 1 < line.length && line[i + 1] === '"') { current += '"'; i++; }
-      else inQuotes = !inQuotes;
-    } else if (c === ',' && !inQuotes) { result.push(current); current = ''; }
-    else current += c;
-  }
-  result.push(current);
-  return result;
-}
-
 function parseAccount(raw) {
   const s = raw.replace(/[\u202a\u202c]/g, '').trim();
   if (!s) return { age: '', bank: '', limit: '' };
@@ -121,45 +105,6 @@ function parseAccount(raw) {
   }
   const bank = before.slice(bankStart).join(' ');
   return { age, bank, limit };
-}
-
-function parseGenie(csv) {
-  const lines = csv.split('\n');
-  // Detect column positions from the header row. Sheet owners reorder
-  // columns occasionally; looking up by header name survives shifts.
-  let accountCol = -1, dateCol = -1, priceCol = -1;
-  for (let i = 0; i < Math.min(5, lines.length); i++) {
-    const cells = parseCSVLine(lines[i]);
-    for (let j = 0; j < cells.length; j++) {
-      const c = cells[j].trim().toUpperCase();
-      if (c === 'AGE/BANK/CREDIT LIMIT') accountCol = j;
-      else if (c === 'STATEMENT/CLOSING DATE') dateCol = j;
-      else if (c === 'PRICE') priceCol = j;
-    }
-    if (accountCol >= 0 && dateCol >= 0 && priceCol >= 0) break;
-  }
-  // Fallback to legacy hardcoded positions if header not found.
-  if (accountCol < 0) accountCol = 11;
-  if (dateCol < 0) dateCol = 12;
-  if (priceCol < 0) priceCol = 13;
-
-  const accounts = [];
-  const minLen = Math.max(accountCol, dateCol, priceCol) + 1;
-  for (let i = 0; i < lines.length; i++) {
-    if (i < 3) continue;
-    const cells = parseCSVLine(lines[i]);
-    if (cells.length < minLen) continue;
-    const spots = cells[0].trim();
-    const account = cells[accountCol].trim();
-    const closingDate = cells[dateCol].trim();
-    const price = cells[priceCol].trim();
-    if (account.toUpperCase().includes('BLACK BAR')) continue;
-    if (!account && !spots) continue;
-    const parsed = parseAccount(account);
-    if (!parsed.bank) continue;
-    accounts.push([spots, parsed.age, parsed.bank, parsed.limit, closingDate, price, String(i + 1)]);
-  }
-  return accounts;
 }
 
 function calcAge(dateOpenedISO) {
@@ -326,14 +271,13 @@ async function scrapeSupply() {
 
 function isBlackFill(cell) {
   // Tradeline Genie marks sold-out rows with a black cell fill.
-  // Accept fgColor or bgColor, ARGB or RGB.
+  // Accept fgColor or bgColor, ARGB (FF000000) or RGB (000000).
   const f = cell && cell.fill;
   if (!f) return false;
   const c = f.fgColor || f.bgColor;
   if (!c) return false;
   const raw = String(c.argb || c.rgb || '').toLowerCase();
-  // ARGB "FF000000" or RGB "000000" or any form ending in 6 zeros.
-  return raw === 'ff000000' || raw === '000000' || (raw.length >= 6 && raw.endsWith('000000'));
+  return raw === 'ff000000' || raw === '000000';
 }
 
 async function scrapeGenie() {
@@ -406,8 +350,13 @@ async function scrapeGenie() {
   });
 
   if (accounts.length === 0) throw new Error('Genie parsed 0 accounts (sheet may be closed or empty)');
-  console.log(`[genie] filtered ${skippedSoldOut} sold-out (black-filled) rows`);
-  return { accounts, timestamp: new Date().toISOString(), source: 'tradelinegenie.com', count: accounts.length };
+  return {
+    accounts,
+    timestamp: new Date().toISOString(),
+    source: 'tradelinegenie.com',
+    count: accounts.length,
+    skippedSoldOut,
+  };
 }
 
 async function scrapeBoost() {
@@ -465,7 +414,8 @@ async function main() {
       await writeJSON(src.name, data);
       results[src.name] = data;
       successCount++;
-      console.log(`[${src.name}] OK — ${data.count} accounts`);
+      const extra = data.skippedSoldOut > 0 ? ` (${data.skippedSoldOut} sold-out filtered)` : '';
+      console.log(`[${src.name}] OK — ${data.count} accounts${extra}`);
     } catch (err) {
       console.error(`[${src.name}] FAIL — ${err.message} (keeping last-known-good)`);
       const existing = await readExisting(src.name);
