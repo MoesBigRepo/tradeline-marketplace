@@ -247,6 +247,7 @@ tbody tr:nth-child(even):hover { background: rgba(255,255,255,0.04); }
 .cell-avail-high { color: var(--green); font-weight: 600; }
 .cell-avail-med { color: var(--amber); font-weight: 600; }
 .cell-avail-low { color: var(--red); font-weight: 600; }
+.cell-sold-out { color: var(--text-tertiary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; font-size: 11px; }
 
 /* ─── Footer banner ────────────────────────────────────────── */
 .table-footer { padding: 14px 22px; display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: rgba(255,255,255,0.65); border-top: 1px solid var(--glass-border); background: rgba(0,0,0,0.2); }
@@ -1504,7 +1505,8 @@ function renderTable(tab) {
 
           case 'Availability':
             var spots = String(v).toUpperCase();
-            if (spots === 'MANY') { cls = 'cell-avail-high'; }
+            if (spots === 'SOLD OUT') { display = 'Sold Out'; cls = 'cell-sold-out'; }
+            else if (spots === 'MANY') { cls = 'cell-avail-high'; }
             else {
               var sn = parseInt(v);
               if (!isNaN(sn)) {
@@ -1610,7 +1612,8 @@ function renderTable(tab) {
           }
           if (headers[mc] === 'Availability') {
             var mspots = String(mv).toUpperCase();
-            if (mspots !== 'MANY') { var msn = parseInt(mv); if (!isNaN(msn)) mdisplay = String(msn); }
+            if (mspots === 'SOLD OUT') { mdisplay = 'Sold Out'; }
+            else if (mspots !== 'MANY') { var msn = parseInt(mv); if (!isNaN(msn)) mdisplay = String(msn); }
           }
           detailHtml += '<div class="mobile-detail-row"><span class="mobile-detail-label">' + headers[mc] + '</span><span class="mobile-detail-value">' + mdisplay + '</span></div>';
         }

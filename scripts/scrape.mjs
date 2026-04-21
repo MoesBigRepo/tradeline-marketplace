@@ -323,7 +323,7 @@ async function scrapeGenie() {
     ? cell.text.trim()
     : String((cell && cell.value) ?? '').trim();
 
-  let skippedSoldOut = 0;
+  let soldOutCount = 0;
   const accounts = [];
   // Data starts at row 5; rows 1-4 are header/legend/instructions in the
   // current sheet layout. Legend row is also black-filled in the spots column.
@@ -334,13 +334,12 @@ async function scrapeGenie() {
     if (!accountVal) return;
     if (accountVal.toUpperCase().includes('BLACK BAR')) return;
 
-    // Sold-out: the account cell (or its row) is filled black.
-    if (isBlackFill(accountCell) || isBlackFill(row.getCell(1))) {
-      skippedSoldOut++;
-      return;
-    }
+    // Sold-out: the account cell (or its row) is filled black. Show the row
+    // with spots = "Sold Out" so clients can see what's no longer available.
+    const isSoldOut = isBlackFill(accountCell) || isBlackFill(row.getCell(1));
+    if (isSoldOut) soldOutCount++;
 
-    const spots = cellText(row.getCell(1));
+    const spots = isSoldOut ? 'Sold Out' : cellText(row.getCell(1));
     const closingDate = cellText(row.getCell(dateCol));
     const price = cellText(row.getCell(priceCol));
 
@@ -355,7 +354,7 @@ async function scrapeGenie() {
     timestamp: new Date().toISOString(),
     source: 'tradelinegenie.com',
     count: accounts.length,
-    skippedSoldOut,
+    soldOut: soldOutCount,
   };
 }
 
@@ -414,7 +413,7 @@ async function main() {
       await writeJSON(src.name, data);
       results[src.name] = data;
       successCount++;
-      const extra = data.skippedSoldOut > 0 ? ` (${data.skippedSoldOut} sold-out filtered)` : '';
+      const extra = data.soldOut > 0 ? ` (${data.soldOut} marked sold out)` : '';
       console.log(`[${src.name}] OK — ${data.count} accounts${extra}`);
     } catch (err) {
       console.error(`[${src.name}] FAIL — ${err.message} (keeping last-known-good)`);
