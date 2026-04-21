@@ -179,8 +179,8 @@ thead th {
   text-align: center; padding: 12px 16px; font-size: 12px; font-weight: 600;
   color: rgba(255,255,255,0.72); text-transform: uppercase; letter-spacing: 0.5px;
   border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(0,0,0,0.3);
-  cursor: pointer; user-select: none; white-space: nowrap; position: relative;
-  transition: background 0.15s, color 0.15s;
+  cursor: pointer; user-select: none; white-space: normal; word-break: break-word; position: relative;
+  transition: background 0.15s, color 0.15s; vertical-align: middle;
 }
 thead th:hover { background: rgba(82,172,242,0.08); color: var(--accent); }
 thead th.sorted { color: var(--accent); background: rgba(82,172,242,0.06); }
