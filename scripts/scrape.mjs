@@ -106,11 +106,13 @@ function parseAccount(raw) {
   let bankStart = 0;
   if (before.length > 0) {
     const first = before[0];
-    if (/^\d{4}$/.test(first)) { age = first; bankStart = 1; }
+    const curYear = new Date().getFullYear();
+    const isSaneYear = (s) => /^\d{4}$/.test(s) && parseInt(s) >= 1990 && parseInt(s) <= curYear + 1;
+    if (isSaneYear(first)) { age = first; bankStart = 1; }
     else if (/^\d+MO$/i.test(first)) { age = first; bankStart = 1; }
     else if (before.length >= 2 &&
              /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(first) &&
-             /^\d{4}$/.test(before[1])) {
+             isSaneYear(before[1])) {
       age = `${first} ${before[1]}`;
       bankStart = 2;
     }
@@ -121,15 +123,34 @@ function parseAccount(raw) {
 
 function parseGenie(csv) {
   const lines = csv.split('\n');
+  // Detect column positions from the header row. Sheet owners reorder
+  // columns occasionally; looking up by header name survives shifts.
+  let accountCol = -1, dateCol = -1, priceCol = -1;
+  for (let i = 0; i < Math.min(5, lines.length); i++) {
+    const cells = parseCSVLine(lines[i]);
+    for (let j = 0; j < cells.length; j++) {
+      const c = cells[j].trim().toUpperCase();
+      if (c === 'AGE/BANK/CREDIT LIMIT') accountCol = j;
+      else if (c === 'STATEMENT/CLOSING DATE') dateCol = j;
+      else if (c === 'PRICE') priceCol = j;
+    }
+    if (accountCol >= 0 && dateCol >= 0 && priceCol >= 0) break;
+  }
+  // Fallback to legacy hardcoded positions if header not found.
+  if (accountCol < 0) accountCol = 11;
+  if (dateCol < 0) dateCol = 12;
+  if (priceCol < 0) priceCol = 13;
+
   const accounts = [];
+  const minLen = Math.max(accountCol, dateCol, priceCol) + 1;
   for (let i = 0; i < lines.length; i++) {
     if (i < 3) continue;
     const cells = parseCSVLine(lines[i]);
-    if (cells.length < 14) continue;
+    if (cells.length < minLen) continue;
     const spots = cells[0].trim();
-    const account = cells[11].trim();
-    const closingDate = cells[12].trim();
-    const price = cells[13].trim();
+    const account = cells[accountCol].trim();
+    const closingDate = cells[dateCol].trim();
+    const price = cells[priceCol].trim();
     if (account.toUpperCase().includes('BLACK BAR')) continue;
     if (!account && !spots) continue;
     const parsed = parseAccount(account);
@@ -141,12 +162,12 @@ function parseGenie(csv) {
 
 function calcAge(dateOpenedISO) {
   const opened = new Date(dateOpenedISO);
-  if (isNaN(opened.getTime())) return '0.0';
+  if (isNaN(opened.getTime())) return '0.00';
   const now = new Date();
   let years = now.getFullYear() - opened.getFullYear();
   let months = now.getMonth() - opened.getMonth();
   if (months < 0) { years--; months += 12; }
-  return `${years}.${months}`;
+  return `${years}.${String(months).padStart(2, '0')}`;
 }
 
 function dayOrdinal(dateISO) {
@@ -180,7 +201,7 @@ function formatPrice(cents) {
 }
 
 function parseBoostJSON(html) {
-  const rscPattern = /\[(\{\\"Id\\":\d+.*?\})\]/g;
+  const rscPattern = /\[(\{\\"Id\\":\d+[\s\S]*?\})\]/g;
   let rscMatch;
   while ((rscMatch = rscPattern.exec(html)) !== null) {
     try {
@@ -216,7 +237,7 @@ function parseBoostCards(html) {
     const stmtDay = statsMatches[2] ? statsMatches[2][1].trim() : '';
     const spots = spotsMatch ? (spotsMatch[1] || spotsMatch[2]) : '0';
     const ageMatch = ageRaw.match(/(\d+)\s*yr/i);
-    const age = ageMatch ? `${ageMatch[1]}.0` : ageRaw;
+    const age = ageMatch ? `${ageMatch[1]}.00` : ageRaw;
     accounts.push([lender, limit, age, spots, stmtDay, '', price]);
   }
   return accounts;
@@ -244,7 +265,7 @@ function parseBoost(html) {
     if (row[2].toLowerCase() === 'lender' || row[0].toLowerCase() === 'price') continue;
     if (!row[2]) continue;
     const m = row[4].match(/(\d+)\s*years?\s*(\d+)?\s*months?/i);
-    const age = m ? `${m[1]}.${m[2] || '0'}` : row[4];
+    const age = m ? `${m[1]}.${String(m[2] || 0).padStart(2, '0')}` : row[4];
     accounts.push([row[2], row[3], age, row[1], row[5], row[6], row[0]]);
   }
   return accounts;
@@ -281,7 +302,6 @@ async function fetchWithTimeout(url, timeoutMs = 20000) {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
         'Accept': 'text/html,text/csv,application/xhtml+xml',
-        'Accept-Encoding': 'gzip, deflate',
       },
       redirect: 'follow',
     });
@@ -307,7 +327,9 @@ async function scrapeGenie() {
   const resp = await fetchWithTimeout(GENIE_URL, 15000);
   if (!resp.ok) throw new Error(`Genie HTTP ${resp.status} (sheet may be closed)`);
   const ctype = (resp.headers.get('content-type') || '').toLowerCase();
-  const text = await resp.text();
+  let text = await resp.text();
+  // Strip UTF-8 BOM if present — Google sometimes emits one on CSV exports.
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
   // Google returns HTML error pages when the sheet is private; detect before parsing.
   if (!ctype.includes('csv') && !ctype.includes('text/plain') && !ctype.includes('application/octet-stream')) {
     throw new Error(`Genie returned non-CSV content-type "${ctype}" (sheet may be closed)`);

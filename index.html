@@ -857,12 +857,20 @@ function manualRefresh() {
   scheduleNextRefresh();
 }
 
+/* ─── Year Opened helper ──────────────────────────────────────────────── */
+function computeYearOpened(age) {
+  if (age === undefined || age === null || age === '') return '';
+  var n = typeof age === 'number' ? age : parseFloat(age);
+  if (isNaN(n) || n <= 0) return '';
+  return new Date().getFullYear() - Math.floor(n);
+}
+
 var TABS = {
-  all:    { headers: ['Bank','Credit Limit','Age','Availability','Price','Statement Date','Purchase By','Source'], rows: [], sort: { col: -1, asc: true }, filters: {}, rangeFilters: {}, search: '', status: 'loading' },
-  supply: { headers: ['Bank','Credit Limit','Age','Availability','Price','Statement Date','Purchase By','Card ID'], rows: [], sort: { col: -1, asc: true }, filters: {}, rangeFilters: {}, search: '', status: 'loading' },
-  genie:  { headers: ['Bank','Credit Limit','Age','Availability','Price','Statement Date','Purchase By','Card ID'], rows: [], sort: { col: -1, asc: true }, filters: {}, rangeFilters: {}, search: '', status: 'loading' },
-  boost:  { headers: ['Bank','Credit Limit','Age','Availability','Price','Statement Date','Purchase By','Post Date'], rows: [], sort: { col: -1, asc: true }, filters: {}, rangeFilters: {}, search: '', status: 'loading' },
-  gfs:    { headers: ['Bank','Credit Limit','Age','Price','Statement Date','Post Date','Purchase By','Tradeline ID'], rows: [], sort: { col: -1, asc: true }, filters: {}, rangeFilters: {}, search: '', status: 'loading' }
+  all:    { headers: ['Bank','Credit Limit','Age','Year Opened','Availability','Price','Statement Date','Purchase By','Source'], rows: [], sort: { col: -1, asc: true }, filters: {}, rangeFilters: {}, search: '', status: 'loading' },
+  supply: { headers: ['Bank','Credit Limit','Age','Year Opened','Availability','Price','Statement Date','Purchase By','Card ID'], rows: [], sort: { col: -1, asc: true }, filters: {}, rangeFilters: {}, search: '', status: 'loading' },
+  genie:  { headers: ['Bank','Credit Limit','Age','Year Opened','Availability','Price','Statement Date','Purchase By','Card ID'], rows: [], sort: { col: -1, asc: true }, filters: {}, rangeFilters: {}, search: '', status: 'loading' },
+  boost:  { headers: ['Bank','Credit Limit','Age','Year Opened','Availability','Price','Statement Date','Purchase By','Post Date'], rows: [], sort: { col: -1, asc: true }, filters: {}, rangeFilters: {}, search: '', status: 'loading' },
+  gfs:    { headers: ['Bank','Credit Limit','Age','Year Opened','Price','Statement Date','Post Date','Purchase By','Tradeline ID'], rows: [], sort: { col: -1, asc: true }, filters: {}, rangeFilters: {}, search: '', status: 'loading' }
 };
 
 var activeTab = 'all';
@@ -1152,7 +1160,7 @@ function processSupplyGenieData(tab, data) {
           if (!isNaN(yr) && mo >= 0) {
             var now = new Date();
             var totalMonths = (now.getFullYear() - yr) * 12 + (now.getMonth() - mo);
-            age = parseFloat(Math.floor(totalMonths / 12) + '.' + (totalMonths % 12));
+            age = parseFloat(Math.floor(totalMonths / 12) + '.' + String(totalMonths % 12).padStart(2, '0'));
           }
         }
       } catch(e) {}
@@ -1163,22 +1171,37 @@ function processSupplyGenieData(tab, data) {
       var stock = parseInt(a[6]); if (isNaN(stock)) stock = a[6];
       var price = parseFloat(String(a[7]).replace(/[$,]/g, '')); if (isNaN(price)) price = a[7];
       var bank = standardizeBank(a[0]);
-      return [bank, cl, isAmex(bank) ? 0 : age, stock, price, reportDate, purchaseDate, a[1]];
+      var _sAge = isAmex(bank) ? 0 : age;
+      return [bank, cl, _sAge, computeYearOpened(_sAge), stock, price, reportDate, purchaseDate, a[1]];
     });
   } else {
     rows = accts.map(function(a) {
       var price = parseFloat(String(a[5]).replace(/[$,]/g, '')); if (isNaN(price)) price = a[5];
       var age = a[1];
+      var gOpenYear = '';
       try {
-        var yrVal = parseInt(a[1]);
+        var rawAge = String(a[1]).trim();
+        var mm = rawAge.match(/^(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec)\s+(\d{4})$/i);
+        var yrVal, openMo = 0;
+        if (mm) {
+          yrVal = parseInt(mm[2]);
+          var ml = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+          openMo = ml.indexOf(mm[1].toLowerCase().substring(0, 3));
+        } else {
+          yrVal = parseInt(rawAge);
+        }
         if (!isNaN(yrVal) && yrVal > 1990 && yrVal <= new Date().getFullYear()) {
           var now = new Date();
-          var totalMonths = (now.getFullYear() - yrVal) * 12 + now.getMonth();
-          age = parseFloat(Math.floor(totalMonths / 12) + '.' + (totalMonths % 12));
+          var totalMonths = (now.getFullYear() - yrVal) * 12 + (now.getMonth() - openMo);
+          if (totalMonths < 0) totalMonths = 0;
+          age = parseFloat(Math.floor(totalMonths / 12) + '.' + String(totalMonths % 12).padStart(2, '0'));
+          gOpenYear = yrVal;
         }
       } catch(e) {}
       var bank = standardizeBank(a[2]);
-      return [bank, a[3], isAmex(bank) ? 0 : age, a[0], price, a[4], purchaseByFromStatement(a[4]), a[6] || ''];
+      var _gAge = isAmex(bank) ? 0 : age;
+      var _gYear = isAmex(bank) ? '' : gOpenYear;
+      return [bank, a[3], _gAge, _gYear, a[0], price, a[4], purchaseByFromStatement(a[4]), a[6] || ''];
     });
   }
   TABS[tab].rows = rows;
@@ -1278,7 +1301,8 @@ function fetchBoostData() {
         var price = parseFloat(String(a[6]).replace(/[$,]/g, ''));
         if (isNaN(price)) price = a[6];
 
-        return [lender, limit, isAmex(lender) ? 0 : age, spots, price, stmtDay, purchaseByFromStatement(a[4]), postDate];
+        var _bAge = isAmex(lender) ? 0 : age;
+        return [lender, limit, _bAge, computeYearOpened(_bAge), spots, price, stmtDay, purchaseByFromStatement(a[4]), postDate];
       });
 
       TABS.boost.rows = rows;
@@ -1317,16 +1341,23 @@ function fetchGFSData() {
         var limitNum = parseFloat(String(a[1]).replace(/[$,]/g, ''));
         if (!isNaN(limitNum)) limit = limitNum;
 
-        // Parse age: "4 years" -> 4.0
+        // Parse age: "4 years" -> 4.00, "9 months" -> 0.09, "2 years 3 months" -> 2.03
         var age = a[2];
-        var ageMatch = String(a[2]).match(/(\d+)\s*year/i);
-        if (ageMatch) age = parseFloat(ageMatch[1]);
+        var rawAge = String(a[2]);
+        var yearMatch = rawAge.match(/(\d+)\s*year/i);
+        var monthMatch = rawAge.match(/(\d+)\s*month/i);
+        if (yearMatch || monthMatch) {
+          var y = yearMatch ? parseInt(yearMatch[1]) : 0;
+          var mo = monthMatch ? parseInt(monthMatch[1]) : 0;
+          age = parseFloat(y + '.' + String(mo).padStart(2, '0'));
+        }
 
         var price = a[3];
         var priceNum = parseFloat(String(a[3]).replace(/[$,]/g, ''));
         if (!isNaN(priceNum)) price = priceNum;
 
-        return [lender, limit, isAmex(lender) ? 0 : age, price, a[6], a[4], a[5], a[7]];
+        var _fAge = isAmex(lender) ? 0 : age;
+        return [lender, limit, _fAge, computeYearOpened(_fAge), price, a[6], a[4], a[5], a[7]];
       });
 
       TABS.gfs.rows = rows;
@@ -1347,23 +1378,21 @@ function fetchGFSData() {
 
 function buildAllTab() {
   // Merge rows from all 4 tabs into the All tab
-  // All tab columns: [Bank, CreditLimit, Age, Availability, Price, StatementDate, PurchaseBy, Source]
+  // All tab columns: [Bank, CreditLimit, Age, YearOpened, Availability, Price, StatementDate, PurchaseBy, Source]
   var allRows = [];
-  // Supply: [Bank(0), CreditLimit(1), Age(2), Availability(3), Price(4), StatementDate(5), PurchaseBy(6), CardID(7)]
+  // Supply/Genie/Boost source shape (9): [Bank(0), CreditLimit(1), Age(2), YearOpened(3), Availability(4), Price(5), StatementDate(6), PurchaseBy(7), CardID/PostDate(8)]
   TABS.supply.rows.forEach(function(r) {
-    allRows.push([r[0], r[1], r[2], r[3], r[4], r[5], r[6], 'Supply']);
+    allRows.push([r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], 'Supply']);
   });
-  // Genie: [Bank(0), CreditLimit(1), Age(2), Availability(3), Price(4), StatementDate(5), PurchaseBy(6), CardID(7)]
   TABS.genie.rows.forEach(function(r) {
-    allRows.push([r[0], r[1], r[2], r[3], r[4], r[5], r[6], 'Genie']);
+    allRows.push([r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], 'Genie']);
   });
-  // Boost: [Bank(0), CreditLimit(1), Age(2), Availability(3), Price(4), StatementDate(5), PurchaseBy(6), PostDate(7)]
   TABS.boost.rows.forEach(function(r) {
-    allRows.push([r[0], r[1], r[2], r[3], r[4], r[5], r[6], 'Boost']);
+    allRows.push([r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], 'Boost']);
   });
-  // GFS: [Bank(0), CreditLimit(1), Age(2), Price(3), StatementDate(4), PostDate(5), PurchaseBy(6), TradelineID(7)]
+  // GFS source shape (9): [Bank(0), CreditLimit(1), Age(2), YearOpened(3), Price(4), StatementDate(5), PostDate(6), PurchaseBy(7), TradelineID(8)] — no Availability
   TABS.gfs.rows.forEach(function(r) {
-    allRows.push([r[0], r[1], r[2], '', r[3], r[4], r[6], 'GFS']);
+    allRows.push([r[0], r[1], r[2], r[3], '', r[4], r[5], r[7], 'GFS']);
   });
 
   TABS.all.rows = allRows;
@@ -1554,6 +1583,12 @@ function getRangePresets(header) {
     { label: '5-10 yrs', min: 5, max: 10 },
     { label: '10+ yrs', min: 10, max: null }
   ];
+  if (header === 'Year Opened') return [
+    { label: '2024+', min: 2024, max: null },
+    { label: '2020-2023', min: 2020, max: 2023 },
+    { label: '2015-2019', min: 2015, max: 2019 },
+    { label: '< 2015', min: null, max: 2014 }
+  ];
   if (header === 'Credit Limit') return [
     { label: '< $5K', min: null, max: 5000 },
     { label: '$5K-$15K', min: 5000, max: 15000 },
@@ -1614,7 +1649,7 @@ function renderTable(tab) {
     for (var sk = 0; sk < 8; sk++) {
       html += '<tr>';
       for (var sc = 0; sc < state.headers.length; sc++) {
-        var skw = [25, 20, 12, 15, 18, 22, 22, 20][sc % 8];
+        var skw = [25, 20, 12, 18, 15, 18, 22, 22, 20][sc % 9];
         html += '<td><div class="skeleton-bone" style="width:' + skw + '%;min-width:40px;"></div></td>';
       }
       html += '</tr>';
@@ -1644,7 +1679,7 @@ function renderTable(tab) {
             var av = (typeof v === 'number') ? v : parseFloat(v);
             if (!isNaN(av)) {
               var yr = Math.floor(av);
-              var mo = Math.round((av - yr) * 10);
+              var mo = Math.round((av - yr) * 100);
               if (yr === 0 && mo === 0) display = '0y';
               else if (mo > 0) display = yr + 'y ' + mo + 'm';
               else display = yr + 'y';
@@ -1683,7 +1718,7 @@ function renderTable(tab) {
             break;
         }
 
-        html += '<td data-label="' + header + '"' + (cls ? ' class="' + cls + '"' : '') + '>' + display + '</td>';
+        html += '<td data-label="' + escapeHtml(header) + '"' + (cls ? ' class="' + cls + '"' : '') + '>' + display + '</td>';
       });
       html += '</tr>';
     });
@@ -1739,7 +1774,7 @@ function renderTable(tab) {
         var mav = (typeof row[2] === 'number') ? row[2] : parseFloat(row[2]);
         if (!isNaN(mav)) {
           var myr = Math.floor(mav);
-          var mmo = Math.round((mav - myr) * 10);
+          var mmo = Math.round((mav - myr) * 100);
           if (myr === 0 && mmo === 0) ageDisplay = '0y';
           else if (mmo > 0) ageDisplay = myr + 'y ' + mmo + 'm';
           else ageDisplay = myr + 'y';
@@ -2170,14 +2205,14 @@ function updateStats() {
   var heroTotal, heroPrices = [];
   if (activeTab === 'all') {
     heroTotal = total;
-    supplyRows.forEach(function(r) { if (typeof r[4] === 'number') heroPrices.push(r[4]); });
-    genieRows.forEach(function(r) { if (typeof r[4] === 'number' && r[4] > 0) heroPrices.push(r[4]); });
-    boostRows.forEach(function(r) { if (typeof r[4] === 'number') heroPrices.push(r[4]); });
-    gfsRows.forEach(function(r) { if (typeof r[3] === 'number') heroPrices.push(r[3]); });
+    supplyRows.forEach(function(r) { if (typeof r[5] === 'number') heroPrices.push(r[5]); });
+    genieRows.forEach(function(r) { if (typeof r[5] === 'number' && r[5] > 0) heroPrices.push(r[5]); });
+    boostRows.forEach(function(r) { if (typeof r[5] === 'number') heroPrices.push(r[5]); });
+    gfsRows.forEach(function(r) { if (typeof r[4] === 'number') heroPrices.push(r[4]); });
   } else {
     var tabRows = TABS[activeTab].rows;
     heroTotal = tabRows.length;
-    var priceCol = activeTab === 'gfs' ? 3 : 4;
+    var priceCol = activeTab === 'gfs' ? 4 : 5;
     tabRows.forEach(function(r) { var p = r[priceCol]; if (typeof p === 'number' && p > 0) heroPrices.push(p); });
   }
 
