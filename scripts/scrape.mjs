@@ -289,20 +289,25 @@ function parseOrdinalDay(s) {
   return d >= 1 && d <= 31 ? d : null;
 }
 
+// Match the UI's 4-day purchase lead (index.html `computePurchaseBy`). A row
+// is actionable only while today <= statement_day - PURCHASE_LEAD_DAYS.
+const PURCHASE_LEAD_DAYS = 4;
+
 // Genie's sheet stores only a day ordinal; the implicit month is the current
-// calendar month. Once that day has passed this month, the statement cycle is
-// over and the seller isn't taking new adds — the row is stale and should not
-// be shown. Conservative: unparseable or invalid-for-this-month days are kept.
+// calendar month. A row is stale if either (a) the day doesn't exist in the
+// current month (e.g., "31ST" in April) or (b) its purchase-by date has
+// already passed. Unparseable values are kept (conservative).
 function isGenieRowStale(dayStr, today) {
   const day = parseOrdinalDay(dayStr);
   if (day === null) return false;
   const year = today.getUTCFullYear();
   const month = today.getUTCMonth();
   const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
-  if (day > daysInMonth) return false;
+  if (day > daysInMonth) return true;
   const target = Date.UTC(year, month, day);
+  const purchaseBy = target - PURCHASE_LEAD_DAYS * 86400000;
   const todayMidnight = Date.UTC(year, month, today.getUTCDate());
-  return target < todayMidnight;
+  return purchaseBy < todayMidnight;
 }
 
 async function scrapeGenie() {
