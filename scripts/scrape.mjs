@@ -280,6 +280,31 @@ function isBlackFill(cell) {
   return raw === 'ff000000' || raw === '000000';
 }
 
+// Parse a Genie closing-day ordinal ("7TH", "16th", "3RD") into 1..31, or null.
+function parseOrdinalDay(s) {
+  if (typeof s !== 'string') return null;
+  const m = s.trim().match(/^(\d{1,2})(?:ST|ND|RD|TH)?$/i);
+  if (!m) return null;
+  const d = parseInt(m[1], 10);
+  return d >= 1 && d <= 31 ? d : null;
+}
+
+// Genie's sheet stores only a day ordinal; the implicit month is the current
+// calendar month. Once that day has passed this month, the statement cycle is
+// over and the seller isn't taking new adds — the row is stale and should not
+// be shown. Conservative: unparseable or invalid-for-this-month days are kept.
+function isGenieRowStale(dayStr, today) {
+  const day = parseOrdinalDay(dayStr);
+  if (day === null) return false;
+  const year = today.getUTCFullYear();
+  const month = today.getUTCMonth();
+  const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  if (day > daysInMonth) return false;
+  const target = Date.UTC(year, month, day);
+  const todayMidnight = Date.UTC(year, month, today.getUTCDate());
+  return target < todayMidnight;
+}
+
 async function scrapeGenie() {
   // Hardened for "sheet closed" scenarios — sheet owner toggles access when inventory is low.
   const resp = await fetchWithTimeout(GENIE_URL, 20000);
@@ -323,7 +348,9 @@ async function scrapeGenie() {
     ? cell.text.trim()
     : String((cell && cell.value) ?? '').trim();
 
+  const TODAY = new Date();
   let soldOutCount = 0;
+  let staleCount = 0;
   const accounts = [];
   // Data starts at row 5; rows 1-4 are header/legend/instructions in the
   // current sheet layout. Legend row is also black-filled in the spots column.
@@ -334,13 +361,18 @@ async function scrapeGenie() {
     if (!accountVal) return;
     if (accountVal.toUpperCase().includes('BLACK BAR')) return;
 
+    const closingDate = cellText(row.getCell(dateCol));
+    if (isGenieRowStale(closingDate, TODAY)) {
+      staleCount++;
+      return;
+    }
+
     // Sold-out: the account cell (or its row) is filled black. Show the row
     // with spots = "Sold Out" so clients can see what's no longer available.
     const isSoldOut = isBlackFill(accountCell) || isBlackFill(row.getCell(1));
     if (isSoldOut) soldOutCount++;
 
     const spots = isSoldOut ? 'Sold Out' : cellText(row.getCell(1));
-    const closingDate = cellText(row.getCell(dateCol));
     const price = cellText(row.getCell(priceCol));
 
     const parsed = parseAccount(accountVal);
@@ -355,6 +387,7 @@ async function scrapeGenie() {
     source: 'tradelinegenie.com',
     count: accounts.length,
     soldOut: soldOutCount,
+    stale: staleCount,
   };
 }
 
@@ -413,7 +446,10 @@ async function main() {
       await writeJSON(src.name, data);
       results[src.name] = data;
       successCount++;
-      const extra = data.soldOut > 0 ? ` (${data.soldOut} marked sold out)` : '';
+      const notes = [];
+      if (data.soldOut > 0) notes.push(`${data.soldOut} sold out`);
+      if (data.stale > 0) notes.push(`${data.stale} stale`);
+      const extra = notes.length ? ` (${notes.join(', ')})` : '';
       console.log(`[${src.name}] OK — ${data.count} accounts${extra}`);
     } catch (err) {
       console.error(`[${src.name}] FAIL — ${err.message} (keeping last-known-good)`);
